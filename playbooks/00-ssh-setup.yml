@@ -90,12 +90,12 @@
         
     - name: Check if inventory.ini exists
       stat:
-        path: "./inventory.ini"
+        path: "../inventory.ini"
       register: inventory_file
       
     - name: Fail if inventory.ini not found
       fail:
-        msg: "Error: Inventory file './inventory.ini' not found! Please create inventory.ini with configuration"
+        msg: "Error: Inventory file '../inventory.ini' not found! Please create inventory.ini with configuration"
       when: not inventory_file.stat.exists
       
     - name: Create temporary script to load configuration
@@ -163,7 +163,7 @@
                 NODES+=("$ip:$hostname")
               fi
             fi
-          done < "./inventory.ini"
+          done < "../inventory.ini"
           
           ROOT_PASSWORD="$USER_PASSWORD"
           
