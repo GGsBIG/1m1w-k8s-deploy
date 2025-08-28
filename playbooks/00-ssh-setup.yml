@@ -1,263 +1,69 @@
 ---
-- name: SSH Setup - Ultra Simple SSH Setup (Based on shell script)
-  hosts: localhost
-  gather_facts: no
-  connection: local
-  
+- name: Ultra Simple SSH Setup
+  hosts: all
+  become: true
   vars:
-    inventory_file: "../inventory.ini"
-    
+    ssh_key_path: "{{ ansible_ssh_private_key_file | default('~/.ssh/id_rsa') }}"
+
+  pre_tasks:
+    - name: Ensure sshpass is installed (Debian/Ubuntu)
+      apt:
+        name: sshpass
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    - name: Ensure sshpass is installed (RedHat/CentOS)
+      yum:
+        name: sshpass
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    - name: Ensure sshpass is installed (Fedora)
+      dnf:
+        name: sshpass
+        state: present
+      when: ansible_distribution == "Fedora"
+
   tasks:
-    - name: Display SSH setup banner
-      debug:
-        msg:
-          - "=== Ultra Simple SSH Setup ==="
-    
-    - name: Check if sshpass is installed
-      command: which sshpass
-      register: sshpass_check
-      ignore_errors: yes
-      changed_when: false
-      
-    - name: Install sshpass automatically
-      block:
-        - name: Check available package managers
-          shell: |
-            if command -v apt &> /dev/null; then
-              echo "apt"
-            elif command -v yum &> /dev/null; then
-              echo "yum" 
-            elif command -v dnf &> /dev/null; then
-              echo "dnf"
-            elif command -v brew &> /dev/null; then
-              echo "brew"
-            else
-              echo "none"
-            fi
-          register: pkg_manager
-          changed_when: false
-          
-        - name: Install sshpass via apt
-          apt:
-            name: sshpass
-            state: present
-            update_cache: yes
-          become: yes
-          when: pkg_manager.stdout == "apt"
-          
-        - name: Install sshpass via yum
-          yum:
-            name: sshpass
-            state: present
-          become: yes
-          when: pkg_manager.stdout == "yum"
-          
-        - name: Install sshpass via dnf
-          dnf:
-            name: sshpass
-            state: present
-          become: yes
-          when: pkg_manager.stdout == "dnf"
-          
-        - name: Install sshpass via brew
-          homebrew:
-            name: sshpass
-            state: present
-          when: pkg_manager.stdout == "brew"
-          
-        - name: Display manual installation instructions
-          debug:
-            msg:
-              - "Please install sshpass manually:"
-              - "  Ubuntu/Debian: sudo apt install sshpass"
-              - "  CentOS/RHEL: sudo yum install sshpass"
-              - "  Fedora: sudo dnf install sshpass"
-              - "  macOS: brew install sshpass"
-          when: pkg_manager.stdout == "none"
-          
-        - name: Fail if no package manager found
-          fail:
-            msg: "No supported package manager found. Please install sshpass manually."
-          when: pkg_manager.stdout == "none"
-          
-      when: sshpass_check.rc != 0
-      
-    - name: Verify sshpass installation
-      command: which sshpass
-      register: sshpass_verify
-      changed_when: false
-      
-    - name: Display sshpass installation status
-      debug:
-        msg: "✓ sshpass installed successfully"
-        
-    - name: Check if inventory.ini exists
-      stat:
-        path: "{{ inventory_file }}"
-      register: inventory_file_stat
-      
-    - name: Fail if inventory.ini not found
-      fail:
-        msg: "Error: Inventory file '{{ inventory_file }}' not found! Please create inventory.ini with configuration"
-      when: not inventory_file_stat.stat.exists
-      
-    - name: Read inventory file content
-      slurp:
-        src: "{{ inventory_file }}"
-      register: inventory_content
-      
-    - name: Parse inventory content
-      set_fact:
-        inventory_lines: "{{ (inventory_content.content | b64decode).split('\n') }}"
-        
-    - name: Extract configuration variables
-      set_fact:
-        ssh_username: "{{ inventory_lines | select('match', '^ansible_user=') | first | regex_replace('^ansible_user=', '') | trim }}"
-        ssh_password: "{{ inventory_lines | select('match', '^ansible_become_pass=') | first | regex_replace('^ansible_become_pass=', '') | trim }}"
-        ssh_key_path_raw: "{{ inventory_lines | select('match', '^ansible_ssh_private_key_file=') | first | regex_replace('^ansible_ssh_private_key_file=', '') | trim }}"
-        
-    - name: Get HOME environment variable
-      shell: echo $HOME
-      register: home_path
-      changed_when: false
-      
-    - name: Expand SSH key path
-      set_fact:
-        ssh_key_path: "{{ ssh_key_path_raw | regex_replace('^~', home_path.stdout) }}"
-        
-    - name: Extract master nodes
-      set_fact:
-        master_nodes: "{{ inventory_lines | select('match', '^[a-zA-Z0-9-]+\\s+ansible_host=') | select('match', '.*ansible_host=[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+') | list }}"
-      vars:
-        in_masters: false
-        
-    - name: Parse master node information
-      set_fact:
-        masters_parsed: "{{ masters_parsed | default([]) + [{'hostname': item.split()[0], 'ip': item | regex_search('ansible_host=([0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+)', '\\1') | first}] }}"
-      loop: "{{ master_nodes }}"
-      when: master_nodes is defined
-      
-    - name: Extract worker nodes from specific section
-      shell: |
-        awk '
-        /^\[masters\]/ { in_section="masters"; next }
-        /^\[workers\]/ { in_section="workers"; next }
-        /^\[.*\]/ { in_section=""; next }
-        /^[a-zA-Z0-9-]+.*ansible_host=/ {
-          if (in_section == "masters") print "master:" $0
-          else if (in_section == "workers") print "worker:" $0
-        }
-        ' {{ inventory_file }}
-      register: nodes_raw
-      
-    - name: Parse all nodes
-      set_fact:
-        all_nodes: >-
-          {{
-            nodes_raw.stdout_lines | 
-            map('regex_replace', '^(master|worker):([^\\s]+).*ansible_host=([0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+).*', '\\3:\\2') |
-            list
-          }}
-        
-    - name: Display configuration
-      debug:
-        msg:
-          - "✓ Configuration loaded"
-          - "  Username: {{ ssh_username }}"
-          - "  SSH Key: {{ ssh_key_path }}"
-          - "  Nodes: {{ all_nodes | length }} found"
-          - "  Node list: {{ all_nodes }}"
-          
     - name: Generate SSH key if not exists
-      shell: |
-        if [[ ! -f "{{ ssh_key_path }}" ]]; then
-          echo "Generating SSH key..."
-          ssh-keygen -t rsa -b 4096 -f "{{ ssh_key_path }}" -N "" -C "admin@$(hostname)"
-          echo "✓ SSH key generated"
-        else
-          echo "✓ SSH key exists"
-        fi
-      register: ssh_key_result
-      changed_when: "'SSH key generated' in ssh_key_result.stdout"
-      
-    - name: Display SSH key status
-      debug:
-        msg: "{{ ssh_key_result.stdout }}"
-        
-    - name: Setup each node
-      shell: |
-        set -e
-        
-        node_entry="{{ item }}"
-        IFS=':' read -r node_ip hostname <<< "$node_entry"
-        
-        echo "----------------------------------------"
-        if [[ -n "$hostname" ]]; then
-          echo "Setting up: $node_ip (hostname: $hostname)"
-        else
-          echo "Setting up: $node_ip"
-        fi
-        
-        if [[ -n "$hostname" ]]; then
-          echo "  → Setting hostname to: $hostname"
-          if sshpass -p "{{ ssh_password }}" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 "{{ ssh_username }}@$node_ip" "echo '{{ ssh_password }}' | sudo -S bash -c 'hostnamectl set-hostname $hostname && sed -i \"/127.0.1.1/d\" /etc/hosts && echo \"127.0.1.1 $hostname\" >> /etc/hosts'" 2>/dev/null; then
-            echo "  ✓ Hostname set successfully"
-          else
-            echo "  ✗ Hostname setting failed"
-          fi
-        fi
-        
-        echo "  → Copying key to {{ ssh_username }}@$node_ip"
-        if sshpass -p "{{ ssh_password }}" ssh-copy-id -o StrictHostKeyChecking=no -i "{{ ssh_key_path }}.pub" "{{ ssh_username }}@$node_ip" 2>/dev/null; then
-          echo "  ✓ User key copied"
-        else
-          echo "  ✗ User key failed"
-          exit 1
-        fi
-        
-        echo "  → Copying key to root@$node_ip"
-        if sshpass -p "{{ ssh_password }}" ssh-copy-id -o StrictHostKeyChecking=no -i "{{ ssh_key_path }}.pub" "root@$node_ip" 2>/dev/null; then
-          echo "  ✓ Root key copied"
-        else
-          echo "  ✗ Root key failed"
-        fi
-        
-        echo "  → Testing connections..."
-        if ssh -o ConnectTimeout=3 -o BatchMode=yes -o StrictHostKeyChecking=no "{{ ssh_username }}@$node_ip" "echo 'User OK'" 2>/dev/null; then
-          echo "  ✓ User passwordless login works"
-        fi
-        
-        if ssh -o ConnectTimeout=3 -o BatchMode=yes -o StrictHostKeyChecking=no "root@$node_ip" "echo 'Root OK'" 2>/dev/null; then
-          echo "  ✓ Root passwordless login works"
-        fi
-        
-        if [[ -n "$hostname" ]]; then
-          current_hostname=$(ssh -o ConnectTimeout=3 -o BatchMode=yes -o StrictHostKeyChecking=no "{{ ssh_username }}@$node_ip" "hostname" 2>/dev/null)
-          if [[ "$current_hostname" == "$hostname" ]]; then
-            echo "  ✓ Hostname verified: $current_hostname"
-          else
-            echo "  ! Hostname may need reboot to take effect"
-          fi
-        fi
-        
-        echo "Node setup completed: $node_ip"
-      register: node_setup
-      loop: "{{ all_nodes }}"
-      when: all_nodes | length > 0
-      
-    - name: Display node setup results
-      debug:
-        var: node_setup.results
-      when: node_setup is defined
-      
-    - name: Display setup completion
-      debug:
-        msg:
-          - "----------------------------------------"
-          - "✓ SSH Setup completed!"
-          - ""
-          - "Test your passwordless login:"
-          - "  ssh {{ ssh_username }}@<node_ip>"
-          - "  ssh root@<node_ip>"
-          - ""
-          - "佛祖保佑 - 永無 BUG, 永不加班"
+      community.crypto.openssh_keypair:
+        path: "{{ ssh_key_path }}"
+        type: rsa
+        size: 4096
+        comment: "admin@{{ ansible_hostname }}"
+        state: present
+      delegate_to: localhost
+      run_once: true
+
+    - name: Set hostname
+      hostname:
+        name: "{{ inventory_hostname }}"
+
+    - name: Ensure hostname in /etc/hosts
+      lineinfile:
+        path: /etc/hosts
+        regexp: '^127\.0\.1\.1'
+        line: "127.0.1.1 {{ inventory_hostname }}"
+        state: present
+
+    - name: Copy SSH key to user
+      authorized_key:
+        user: "{{ ansible_user }}"
+        state: present
+        key: "{{ lookup('file', ssh_key_path + '.pub') }}"
+
+    - name: Copy SSH key to root
+      authorized_key:
+        user: root
+        state: present
+        key: "{{ lookup('file', ssh_key_path + '.pub') }}"
+
+    - name: Verify user passwordless login
+      command: echo "User OK"
+      become: false
+
+    - name: Verify root passwordless login
+      command: echo "Root OK"
+      become: false
+      remote_user: root
