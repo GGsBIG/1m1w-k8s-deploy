@@ -1,0 +1,301 @@
+---
+- name: SSH Setup - Ultra Simple SSH Setup (Based on shell script)
+  hosts: localhost
+  gather_facts: no
+  connection: local
+  
+  tasks:
+    - name: Display SSH setup banner
+      debug:
+        msg:
+          - "=== Ultra Simple SSH Setup ==="
+    
+    - name: Check if sshpass is installed
+      command: which sshpass
+      register: sshpass_check
+      ignore_errors: yes
+      changed_when: false
+      
+    - name: Install sshpass automatically
+      block:
+        - name: Check available package managers
+          shell: |
+            if command -v apt &> /dev/null; then
+              echo "apt"
+            elif command -v yum &> /dev/null; then
+              echo "yum" 
+            elif command -v dnf &> /dev/null; then
+              echo "dnf"
+            elif command -v brew &> /dev/null; then
+              echo "brew"
+            else
+              echo "none"
+            fi
+          register: pkg_manager
+          changed_when: false
+          
+        - name: Install sshpass via apt
+          apt:
+            name: sshpass
+            state: present
+            update_cache: yes
+          become: yes
+          when: pkg_manager.stdout == "apt"
+          
+        - name: Install sshpass via yum
+          yum:
+            name: sshpass
+            state: present
+          become: yes
+          when: pkg_manager.stdout == "yum"
+          
+        - name: Install sshpass via dnf
+          dnf:
+            name: sshpass
+            state: present
+          become: yes
+          when: pkg_manager.stdout == "dnf"
+          
+        - name: Install sshpass via brew
+          homebrew:
+            name: sshpass
+            state: present
+          when: pkg_manager.stdout == "brew"
+          
+        - name: Display manual installation instructions
+          debug:
+            msg:
+              - "Please install sshpass manually:"
+              - "  Ubuntu/Debian: sudo apt install sshpass"
+              - "  CentOS/RHEL: sudo yum install sshpass"
+              - "  Fedora: sudo dnf install sshpass"
+              - "  macOS: brew install sshpass"
+          when: pkg_manager.stdout == "none"
+          
+        - name: Fail if no package manager found
+          fail:
+            msg: "No supported package manager found. Please install sshpass manually."
+          when: pkg_manager.stdout == "none"
+          
+      when: sshpass_check.rc != 0
+      
+    - name: Verify sshpass installation
+      command: which sshpass
+      register: sshpass_verify
+      changed_when: false
+      
+    - name: Display sshpass installation status
+      debug:
+        msg: "✓ sshpass installed successfully"
+        
+    - name: Check if inventory.ini exists
+      stat:
+        path: "./inventory.ini"
+      register: inventory_file
+      
+    - name: Fail if inventory.ini not found
+      fail:
+        msg: "Error: Inventory file './inventory.ini' not found! Please create inventory.ini with configuration"
+      when: not inventory_file.stat.exists
+      
+    - name: Load configuration from inventory.ini
+      shell: |
+        USERNAME=""
+        USER_PASSWORD=""
+        SSH_KEY_PATH=""
+        NODES=()
+        
+        in_masters_section=false
+        in_workers_section=false
+        in_all_vars_section=false
+        
+        while IFS= read -r line; do
+          [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+          
+          if [[ "$line" =~ ^\[.*\]$ ]]; then
+            if [[ "$line" == "[masters]" ]]; then
+              in_masters_section=true
+              in_workers_section=false
+              in_all_vars_section=false
+            elif [[ "$line" == "[workers]" ]]; then
+              in_masters_section=false
+              in_workers_section=true
+              in_all_vars_section=false
+            elif [[ "$line" == "[all:vars]" ]]; then
+              in_masters_section=false
+              in_workers_section=false
+              in_all_vars_section=true
+            else
+              in_masters_section=false
+              in_workers_section=false
+              in_all_vars_section=false
+            fi
+            continue
+          fi
+          
+          if [[ "$in_all_vars_section" == true && "$line" =~ ^[a-zA-Z_][a-zA-Z0-9_]*= ]]; then
+            key=$(echo "$line" | cut -d'=' -f1)
+            value=$(echo "$line" | cut -d'=' -f2- | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//')
+            
+            case "$key" in
+              "ansible_user") USERNAME="$value" ;;
+              "ansible_become_pass") USER_PASSWORD="$value" ;;
+              "ansible_ssh_private_key_file") SSH_KEY_PATH="${value/#~/$HOME}" ;;
+            esac
+          fi
+          
+          if [[ "$in_masters_section" == true && "$line" =~ ^[a-zA-Z0-9-]+ ]]; then
+            hostname=$(echo "$line" | awk '{print $1}')
+            if [[ "$line" =~ ansible_host=([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+) ]]; then
+              ip="${BASH_REMATCH[1]}"
+              NODES+=("$ip:$hostname")
+            fi
+          fi
+          
+          if [[ "$in_workers_section" == true && "$line" =~ ^[a-zA-Z0-9-]+ ]]; then
+            hostname=$(echo "$line" | awk '{print $1}')
+            if [[ "$line" =~ ansible_host=([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+) ]]; then
+              ip="${BASH_REMATCH[1]}"
+              NODES+=("$ip:$hostname")
+            fi
+          fi
+        done < "./inventory.ini"
+        
+        ROOT_PASSWORD="$USER_PASSWORD"
+        
+        if [[ -z "$USERNAME" || -z "$USER_PASSWORD" || -z "$SSH_KEY_PATH" ]]; then
+          echo "ERROR: Missing required configuration!"
+          echo "Required: ansible_user, ansible_become_pass, ansible_ssh_private_key_file"
+          echo "Make sure these are set in [all:vars] section"
+          exit 1
+        fi
+        
+        if [[ ${#NODES[@]} -eq 0 ]]; then
+          echo "ERROR: No nodes found in inventory!"
+          echo "Make sure you have [masters] and [workers] sections with ansible_host specified"
+          exit 1
+        fi
+        
+        echo "USERNAME=$USERNAME"
+        echo "USER_PASSWORD=$USER_PASSWORD"
+        echo "ROOT_PASSWORD=$ROOT_PASSWORD"
+        echo "SSH_KEY_PATH=$SSH_KEY_PATH"
+        echo "NODES_COUNT=${#NODES[@]}"
+        for i in "${!NODES[@]}"; do
+          echo "NODE_$i=${NODES[$i]}"
+        done
+      register: config_vars
+      changed_when: false
+      
+    - name: Parse configuration variables
+      set_fact:
+        ssh_username: "{{ config_vars.stdout_lines | select('match', '^USERNAME=') | first | regex_replace('^USERNAME=', '') }}"
+        ssh_password: "{{ config_vars.stdout_lines | select('match', '^USER_PASSWORD=') | first | regex_replace('^USER_PASSWORD=', '') }}"
+        ssh_key_path: "{{ config_vars.stdout_lines | select('match', '^SSH_KEY_PATH=') | first | regex_replace('^SSH_KEY_PATH=', '') }}"
+        nodes_count: "{{ config_vars.stdout_lines | select('match', '^NODES_COUNT=') | first | regex_replace('^NODES_COUNT=', '') | int }}"
+        
+    - name: Extract node information
+      set_fact:
+        nodes_list: "{{ config_vars.stdout_lines | select('match', '^NODE_') | list | map('regex_replace', '^NODE_[0-9]+=', '') | list }}"
+        
+    - name: Display configuration
+      debug:
+        msg:
+          - "✓ Configuration loaded"
+          - "  Username: {{ ssh_username }}"
+          - "  SSH Key: {{ ssh_key_path }}"
+          - "  Nodes: {{ nodes_count }} found"
+          
+    - name: Generate SSH key if not exists
+      shell: |
+        if [[ ! -f "{{ ssh_key_path }}" ]]; then
+          echo "Generating SSH key..."
+          ssh-keygen -t rsa -b 4096 -f "{{ ssh_key_path }}" -N "" -C "admin@$(hostname)"
+          echo "✓ SSH key generated"
+        else
+          echo "✓ SSH key exists"
+        fi
+      register: ssh_key_result
+      changed_when: "'SSH key generated' in ssh_key_result.stdout"
+      
+    - name: Display SSH key status
+      debug:
+        msg: "{{ ssh_key_result.stdout }}"
+        
+    - name: Setup each node
+      shell: |
+        set -e
+        
+        node_entry="{{ item }}"
+        IFS=':' read -r node_ip hostname <<< "$node_entry"
+        
+        echo "----------------------------------------"
+        if [[ -n "$hostname" ]]; then
+          echo "Setting up: $node_ip (hostname: $hostname)"
+        else
+          echo "Setting up: $node_ip"
+        fi
+        
+        if [[ -n "$hostname" ]]; then
+          echo "  → Setting hostname to: $hostname"
+          if sshpass -p "{{ ssh_password }}" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 "{{ ssh_username }}@$node_ip" "echo '{{ ssh_password }}' | sudo -S bash -c 'hostnamectl set-hostname $hostname && sed -i \"/127.0.1.1/d\" /etc/hosts && echo \"127.0.1.1 $hostname\" >> /etc/hosts'" 2>/dev/null; then
+            echo "  ✓ Hostname set successfully"
+          else
+            echo "  ✗ Hostname setting failed"
+          fi
+        fi
+        
+        echo "  → Copying key to {{ ssh_username }}@$node_ip"
+        if sshpass -p "{{ ssh_password }}" ssh-copy-id -o StrictHostKeyChecking=no -i "{{ ssh_key_path }}.pub" "{{ ssh_username }}@$node_ip" 2>/dev/null; then
+          echo "  ✓ User key copied"
+        else
+          echo "  ✗ User key failed"
+          exit 1
+        fi
+        
+        echo "  → Copying key to root@$node_ip"
+        if sshpass -p "{{ ssh_password }}" ssh-copy-id -o StrictHostKeyChecking=no -i "{{ ssh_key_path }}.pub" "root@$node_ip" 2>/dev/null; then
+          echo "  ✓ Root key copied"
+        else
+          echo "  ✗ Root key failed"
+        fi
+        
+        echo "  → Testing connections..."
+        if ssh -o ConnectTimeout=3 -o BatchMode=yes -o StrictHostKeyChecking=no "{{ ssh_username }}@$node_ip" "echo 'User OK'" 2>/dev/null; then
+          echo "  ✓ User passwordless login works"
+        fi
+        
+        if ssh -o ConnectTimeout=3 -o BatchMode=yes -o StrictHostKeyChecking=no "root@$node_ip" "echo 'Root OK'" 2>/dev/null; then
+          echo "  ✓ Root passwordless login works"
+        fi
+        
+        if [[ -n "$hostname" ]]; then
+          current_hostname=$(ssh -o ConnectTimeout=3 -o BatchMode=yes -o StrictHostKeyChecking=no "{{ ssh_username }}@$node_ip" "hostname" 2>/dev/null)
+          if [[ "$current_hostname" == "$hostname" ]]; then
+            echo "  ✓ Hostname verified: $current_hostname"
+          else
+            echo "  ! Hostname may need reboot to take effect"
+          fi
+        fi
+        
+        echo "Node setup completed: $node_ip"
+      register: node_setup
+      loop: "{{ nodes_list }}"
+      when: nodes_list | length > 0
+      
+    - name: Display node setup results
+      debug:
+        msg: "{{ node_setup.results | map(attribute='stdout_lines') | list }}"
+      when: node_setup is defined
+      
+    - name: Display setup completion
+      debug:
+        msg:
+          - "----------------------------------------"
+          - "✓ SSH Setup completed!"
+          - ""
+          - "Test your passwordless login:"
+          - "  ssh {{ ssh_username }}@<node_ip>"
+          - "  ssh root@<node_ip>"
+          - ""
+          - "佛祖保佑 - 永無 BUG, 永不加班"

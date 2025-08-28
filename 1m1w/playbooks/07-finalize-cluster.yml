@@ -1,0 +1,63 @@
+---
+- name: "Stage 7: Finalize Cluster"
+  hosts: masters[0]
+  become: yes
+  gather_facts: yes
+  
+  tasks:
+    - name: Label worker nodes
+      shell: |
+        kubectl label node {{ item }} node-role.kubernetes.io/worker= --overwrite
+      loop: "{{ groups['workers'] }}"
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      ignore_errors: yes
+
+    - name: Create crictl configuration on all nodes
+      copy:
+        content: |
+          runtime-endpoint: unix:///run/containerd/containerd.sock
+          image-endpoint: unix:///run/containerd/containerd.sock
+          timeout: 10
+        dest: /etc/crictl.yaml
+        mode: '0644'
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['k8s_nodes'] }}"
+
+    - name: Verify final cluster status
+      shell: kubectl get nodes
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: final_nodes
+
+    - name: Display final cluster status
+      debug:
+        msg: |
+          Cluster nodes:
+          {{ final_nodes.stdout }}
+
+    - name: Verify all pods are running
+      shell: kubectl get pods -A
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: final_pods
+
+    - name: Display cluster pods status
+      debug:
+        var: final_pods.stdout_lines
+
+    - name: Display cluster information
+      debug:
+        msg: |
+          Kubernetes cluster deployment completed successfully!
+          
+          🔧 Cluster Configuration:
+          - Control Plane: {{ control_plane_endpoint }}
+          - Masters: {{ groups['masters'] | length }}
+          - Workers: {{ groups['workers'] | length }}
+          - CNI: Calico {{ calico_version }}
+          
+          Next Steps:
+          1. Copy kubeconfig: scp {{ ansible_user }}@{{ groups['masters'][0] }}:/etc/kubernetes/admin.conf ~/.kube/config
+          2. Verify cluster: kubectl get nodes
+          3. Deploy applications: kubectl apply -f your-app.yaml

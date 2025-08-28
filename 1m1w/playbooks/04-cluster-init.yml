@@ -1,0 +1,74 @@
+---
+- name: "Stage 4: Cluster Initialization"
+  hosts: masters[0]
+  become: yes
+  gather_facts: yes
+  
+  tasks:
+    - name: Add all nodes to /etc/hosts for hostname resolution
+      lineinfile:
+        path: /etc/hosts
+        line: "{{ hostvars[item]['ansible_default_ipv4']['address'] }} {{ item }}"
+        state: present
+      loop: "{{ groups['all'] }}"
+      when: hostvars[item]['ansible_default_ipv4']['address'] is defined
+
+    - name: Create kubeadm init configuration file
+      template:
+        src: ../templates/init-config.yaml.j2
+        dest: /tmp/init-config.yaml
+        mode: '0644'
+
+    - name: Initialize Kubernetes cluster
+      shell: kubeadm init --upload-certs --config=/tmp/init-config.yaml
+      args:
+        creates: /etc/kubernetes/admin.conf
+      register: kubeadm_init_result
+
+    - name: Create .kube directory for root
+      file:
+        path: /root/.kube
+        state: directory
+        mode: '0755'
+
+    - name: Copy admin.conf to root's .kube/config
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /root/.kube/config
+        remote_src: yes
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Create .kube directory for ansible user
+      file:
+        path: "/home/{{ ansible_user }}/.kube"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0755'
+
+    - name: Copy admin.conf to ansible user's .kube/config
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: "/home/{{ ansible_user }}/.kube/config"
+        remote_src: yes
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0644'
+
+    - name: Get worker join command
+      shell: kubeadm token create --print-join-command
+      register: worker_join_command
+
+    - name: Save join command to local file
+      copy:
+        content: "{{ worker_join_command.stdout }}"
+        dest: "/tmp/worker_join_command"
+        mode: '0644'
+      delegate_to: localhost
+
+    - name: Display join command
+      debug:
+        msg: |
+          Worker join command: {{ worker_join_command.stdout }}

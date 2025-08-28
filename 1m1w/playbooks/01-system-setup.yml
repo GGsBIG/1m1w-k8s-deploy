@@ -1,0 +1,105 @@
+---
+- name: "Stage 1: System Setup"
+  hosts: k8s_nodes
+  become: yes
+  gather_facts: yes
+  
+  tasks:
+    - name: Set timezone to Asia/Taipei
+      timezone:
+        name: Asia/Taipei
+
+    - name: Kill unattended-upgrades and wait for dpkg lock
+      shell: |
+        # Kill unattended-upgrades processes
+        sudo pkill -f unattended-upgrade || true
+        sudo pkill -f apt.systemd.daily || true
+        
+        # Wait for processes to finish and release locks
+        timeout=300
+        while [ $timeout -gt 0 ] && (sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || sudo fuser /var/lib/dpkg/lock >/dev/null 2>&1); do
+          echo "Waiting for dpkg lock to be released... ($timeout seconds remaining)"
+          sleep 5
+          timeout=$((timeout-5))
+        done
+        
+        # Force remove lock files if still present
+        sudo rm -f /var/lib/dpkg/lock-frontend
+        sudo rm -f /var/lib/dpkg/lock
+        sudo dpkg --configure -a || true
+      ignore_errors: yes
+
+    - name: Remove any existing Kubernetes repository files
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/apt/sources.list.d/kubernetes.list
+        - /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      ignore_errors: yes
+
+    - name: Install chrony
+      apt:
+        name: chrony
+        state: present
+        update_cache: yes
+
+    - name: Enable chrony service
+      systemd:
+        name: chrony
+        enabled: yes
+
+    - name: Comment out default Ubuntu NTP pools
+      replace:
+        path: /etc/chrony/chrony.conf
+        regexp: '^(pool.*ubuntu.*$)'
+        replace: '#\1'
+
+    - name: Add Google NTP server
+      lineinfile:
+        path: /etc/chrony/chrony.conf
+        line: 'server time.google.com prefer'
+        state: present
+
+    - name: Restart chrony
+      systemd:
+        name: chrony
+        state: restarted
+        daemon_reload: yes
+
+    - name: Disable swap immediately
+      command: swapoff -a
+      ignore_errors: yes
+
+    - name: Comment out swap entries in /etc/fstab
+      replace:
+        path: /etc/fstab
+        regexp: '^([^#].*swap.*$)'
+        replace: '#\1'
+
+    - name: Load kernel modules
+      modprobe:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - overlay
+        - br_netfilter
+
+    - name: Create k8s.conf for kernel modules
+      copy:
+        content: |
+          overlay
+          br_netfilter
+        dest: /etc/modules-load.d/k8s.conf
+
+    - name: Create sysctl configuration for Kubernetes
+      copy:
+        content: |
+          net.bridge.bridge-nf-call-iptables  = 1
+          net.ipv4.ip_forward                 = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+        dest: /etc/sysctl.d/99-kubernetes-cri.conf
+
+    - name: Apply sysctl settings
+      command: sysctl --system
+

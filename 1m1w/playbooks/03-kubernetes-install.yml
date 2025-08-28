@@ -1,0 +1,93 @@
+---
+- name: "Stage 3: Kubernetes Installation"
+  hosts: k8s_nodes
+  become: yes
+  gather_facts: yes
+  
+  tasks:
+    - name: Wait for unattended-upgrades to finish
+      shell: while sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do echo "Waiting for dpkg lock..."; sleep 5; done
+      changed_when: false
+
+    - name: Install required packages
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gpg
+        state: present
+        update_cache: yes
+      retries: 5
+      delay: 30
+      register: apt_result
+      until: apt_result is succeeded
+
+    - name: Create keyrings directory
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Add Kubernetes GPG key
+      shell: |
+        curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.32/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+        chmod 644 /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      args:
+        creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+    - name: Add Kubernetes repository
+      copy:
+        content: 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.32/deb/ /'
+        dest: /etc/apt/sources.list.d/kubernetes.list
+        mode: '0644'
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+      retries: 5
+      delay: 30
+      register: apt_update_result
+      until: apt_update_result is succeeded
+
+    - name: Check available kubelet versions
+      shell: apt-cache madison kubelet | head -10
+      register: kubelet_versions
+      changed_when: false
+
+    - name: Display available kubelet versions
+      debug:
+        var: kubelet_versions.stdout_lines
+
+    - name: Install Kubernetes packages on masters
+      apt:
+        name:
+          - kubelet={{ k8s_version }}
+          - kubeadm={{ k8s_version }}
+          - kubectl={{ k8s_version }}
+        state: present
+      when: inventory_hostname in groups['masters']
+      retries: 5
+      delay: 30
+      register: k8s_masters_result
+      until: k8s_masters_result is succeeded
+
+    - name: Install Kubernetes packages on workers
+      apt:
+        name:
+          - kubelet={{ k8s_version }}
+          - kubeadm={{ k8s_version }}
+        state: present
+      when: inventory_hostname in groups['workers']
+      retries: 5
+      delay: 30
+      register: k8s_workers_result
+      until: k8s_workers_result is succeeded
+
+    - name: Hold Kubernetes packages on masters
+      shell: apt-mark hold kubelet kubeadm kubectl
+      when: inventory_hostname in groups['masters']
+
+    - name: Hold Kubernetes packages on workers
+      shell: apt-mark hold kubelet kubeadm
+      when: inventory_hostname in groups['workers']

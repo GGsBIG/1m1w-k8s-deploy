@@ -1,0 +1,32 @@
+---
+- name: "Stage 5: Network Setup"
+  hosts: masters[0]
+  become: yes
+  gather_facts: yes
+  
+  tasks:
+    - name: Deploy Calico CNI
+      shell: |
+        curl -sL https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/calico.yaml | \
+        kubectl apply -f -
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Wait for Calico pods to be ready
+      shell: kubectl get pods -n kube-system -l k8s-app=calico-node --no-headers
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: calico_pods
+      until: calico_pods.stdout_lines | length > 0 and "Running" in calico_pods.stdout
+      retries: 30
+      delay: 10
+
+    - name: Verify cluster status
+      shell: kubectl get pods -A
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: all_pods
+
+    - name: Display cluster pods status
+      debug:
+        var: all_pods.stdout_lines

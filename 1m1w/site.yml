@@ -1,0 +1,9 @@
+---
+# Main orchestration playbook for Kubernetes cluster deployment (1 Master + 2 Workers)
+- import_playbook: playbooks/01-system-setup.yml
+- import_playbook: playbooks/02-container-runtime.yml
+- import_playbook: playbooks/03-kubernetes-install.yml
+- import_playbook: playbooks/04-cluster-init.yml
+- import_playbook: playbooks/05-network-setup.yml
+- import_playbook: playbooks/06-join-workers.yml
+- import_playbook: playbooks/07-finalize-cluster.yml
