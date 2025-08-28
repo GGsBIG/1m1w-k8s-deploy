@@ -116,9 +116,14 @@
         ssh_password: "{{ inventory_lines | select('match', '^ansible_become_pass=') | first | regex_replace('^ansible_become_pass=', '') | trim }}"
         ssh_key_path_raw: "{{ inventory_lines | select('match', '^ansible_ssh_private_key_file=') | first | regex_replace('^ansible_ssh_private_key_file=', '') | trim }}"
         
+    - name: Get HOME environment variable
+      shell: echo $HOME
+      register: home_path
+      changed_when: false
+      
     - name: Expand SSH key path
       set_fact:
-        ssh_key_path: "{{ ssh_key_path_raw | regex_replace('^~', ansible_env.HOME) }}"
+        ssh_key_path: "{{ ssh_key_path_raw | regex_replace('^~', home_path.stdout) }}"
         
     - name: Extract master nodes
       set_fact:
