@@ -98,99 +98,99 @@
         msg: "Error: Inventory file './inventory.ini' not found! Please create inventory.ini with configuration"
       when: not inventory_file.stat.exists
       
-    - name: Load configuration from inventory.ini
-      shell: |
-        USERNAME=""
-        USER_PASSWORD=""
-        SSH_KEY_PATH=""
-        NODES=()
-        
-        in_masters_section=false
-        in_workers_section=false
-        in_all_vars_section=false
-        
-        while IFS= read -r line; do
-          if [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]]; then
-            continue
-          fi
+    - name: Create temporary script to load configuration
+      copy:
+        dest: /tmp/load_config.sh
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          USERNAME=""
+          USER_PASSWORD=""
+          SSH_KEY_PATH=""
+          NODES=()
           
-          if [[ "$line" =~ ^\[.*\]$ ]]; then
-            if [[ "$line" == "[masters]" ]]; then
-              in_masters_section=true
-              in_workers_section=false
-              in_all_vars_section=false
-            elif [[ "$line" == "[workers]" ]]; then
-              in_masters_section=false
-              in_workers_section=true
-              in_all_vars_section=false
-            elif [[ "$line" == "[all:vars]" ]]; then
-              in_masters_section=false
-              in_workers_section=false
-              in_all_vars_section=true
-            else
-              in_masters_section=false
-              in_workers_section=false
-              in_all_vars_section=false
-            fi
-            continue
-          fi
+          in_masters_section=false
+          in_workers_section=false
+          in_all_vars_section=false
           
-          if [[ "$in_all_vars_section" == true && "$line" =~ ^[a-zA-Z_][a-zA-Z0-9_]*= ]]; then
-            key=$(echo "$line" | cut -d'=' -f1)
-            value=$(echo "$line" | cut -d'=' -f2- | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//')
+          while IFS= read -r line; do
+            [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
             
-            case "$key" in
-              "ansible_user") USERNAME="$value" ;;
-              "ansible_become_pass") USER_PASSWORD="$value" ;;
-              "ansible_ssh_private_key_file") SSH_KEY_PATH="$value" ;;
-            esac
+            if [[ "$line" =~ ^\[.*\]$ ]]; then
+              if [[ "$line" == "[masters]" ]]; then
+                in_masters_section=true
+                in_workers_section=false
+                in_all_vars_section=false
+              elif [[ "$line" == "[workers]" ]]; then
+                in_masters_section=false
+                in_workers_section=true
+                in_all_vars_section=false
+              elif [[ "$line" == "[all:vars]" ]]; then
+                in_masters_section=false
+                in_workers_section=false
+                in_all_vars_section=true
+              else
+                in_masters_section=false
+                in_workers_section=false
+                in_all_vars_section=false
+              fi
+              continue
+            fi
+            
+            if [[ "$in_all_vars_section" == true && "$line" =~ ^[a-zA-Z_][a-zA-Z0-9_]*= ]]; then
+              key=$(echo "$line" | cut -d'=' -f1)
+              value=$(echo "$line" | cut -d'=' -f2- | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//')
+              
+              case "$key" in
+                "ansible_user") USERNAME="$value" ;;
+                "ansible_become_pass") USER_PASSWORD="$value" ;;
+                "ansible_ssh_private_key_file") SSH_KEY_PATH="${value/#~/$HOME}" ;;
+              esac
+            fi
+            
+            if [[ "$in_masters_section" == true && "$line" =~ ^[a-zA-Z0-9-]+ ]]; then
+              hostname=$(echo "$line" | awk '{print $1}')
+              if [[ "$line" =~ ansible_host=([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+) ]]; then
+                ip="${BASH_REMATCH[1]}"
+                NODES+=("$ip:$hostname")
+              fi
+            fi
+            
+            if [[ "$in_workers_section" == true && "$line" =~ ^[a-zA-Z0-9-]+ ]]; then
+              hostname=$(echo "$line" | awk '{print $1}')
+              if [[ "$line" =~ ansible_host=([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+) ]]; then
+                ip="${BASH_REMATCH[1]}"
+                NODES+=("$ip:$hostname")
+              fi
+            fi
+          done < "./inventory.ini"
+          
+          ROOT_PASSWORD="$USER_PASSWORD"
+          
+          if [[ -z "$USERNAME" || -z "$USER_PASSWORD" || -z "$SSH_KEY_PATH" ]]; then
+            echo "ERROR: Missing required configuration!"
+            echo "Required: ansible_user, ansible_become_pass, ansible_ssh_private_key_file"
+            echo "Make sure these are set in [all:vars] section"
+            exit 1
           fi
           
-          if [[ "$in_masters_section" == true && "$line" =~ ^[a-zA-Z0-9-]+ ]]; then
-            hostname=$(echo "$line" | awk '{print $1}')
-            if [[ "$line" =~ ansible_host=([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+) ]]; then
-              ip="${BASH_REMATCH[1]}"
-              NODES+=("$ip:$hostname")
-            fi
+          if [[ ${#NODES[@]} -eq 0 ]]; then
+            echo "ERROR: No nodes found in inventory!"
+            echo "Make sure you have [masters] and [workers] sections with ansible_host specified"
+            exit 1
           fi
           
-          if [[ "$in_workers_section" == true && "$line" =~ ^[a-zA-Z0-9-]+ ]]; then
-            hostname=$(echo "$line" | awk '{print $1}')
-            if [[ "$line" =~ ansible_host=([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+) ]]; then
-              ip="${BASH_REMATCH[1]}"
-              NODES+=("$ip:$hostname")
-            fi
-          fi
-        done < "./inventory.ini"
-        
-        # Expand SSH key path if it contains ~
-        if [[ "$SSH_KEY_PATH" =~ ^~ ]]; then
-          SSH_KEY_PATH="${SSH_KEY_PATH/#~/$HOME}"
-        fi
-        
-        ROOT_PASSWORD="$USER_PASSWORD"
-        
-        if [[ -z "$USERNAME" || -z "$USER_PASSWORD" || -z "$SSH_KEY_PATH" ]]; then
-          echo "ERROR: Missing required configuration!"
-          echo "Required: ansible_user, ansible_become_pass, ansible_ssh_private_key_file"
-          echo "Make sure these are set in [all:vars] section"
-          exit 1
-        fi
-        
-        if [[ ${#NODES[@]} -eq 0 ]]; then
-          echo "ERROR: No nodes found in inventory!"
-          echo "Make sure you have [masters] and [workers] sections with ansible_host specified"
-          exit 1
-        fi
-        
-        echo "USERNAME=$USERNAME"
-        echo "USER_PASSWORD=$USER_PASSWORD"
-        echo "ROOT_PASSWORD=$ROOT_PASSWORD"
-        echo "SSH_KEY_PATH=$SSH_KEY_PATH"
-        echo "NODES_COUNT=${#NODES[@]}"
-        for i in "${!NODES[@]}"; do
-          echo "NODE_$i=${NODES[$i]}"
-        done
+          echo "USERNAME=$USERNAME"
+          echo "USER_PASSWORD=$USER_PASSWORD"
+          echo "ROOT_PASSWORD=$ROOT_PASSWORD"
+          echo "SSH_KEY_PATH=$SSH_KEY_PATH"
+          echo "NODES_COUNT=${#NODES[@]}"
+          for i in "${!NODES[@]}"; do
+            echo "NODE_$i=${NODES[$i]}"
+          done
+          
+    - name: Load configuration from inventory.ini
+      command: /tmp/load_config.sh
       register: config_vars
       changed_when: false
       
@@ -306,3 +306,8 @@
           - "  ssh root@<node_ip>"
           - ""
           - "佛祖保佑 - 永無 BUG, 永不加班"
+          
+    - name: Clean up temporary script
+      file:
+        path: /tmp/load_config.sh
+        state: absent

@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(/Users/tianjiasong/1m1w-k8s-deploy/shell-foot-book/**)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
