@@ -1,0 +1,201 @@
+---
+# NKP Node Prerequisites Preparation Playbook
+# 執行前提：節點已安裝 Ubuntu 22.04 / Rocky Linux 9
+# 用途：將現有節點準備好讓 NKP 接管
+
+- name: "NKP Node Prerequisites"
+  hosts: k8s_nodes
+  become: yes
+  gather_facts: yes
+
+  vars:
+    nkp_user: "{{ ansible_user }}"   # 使用現有 SSH 使用者
+
+  tasks:
+
+    # ─── 1. 停用 Swap（K8s / NKP 強制要求）────────────────────────────────
+    - name: Disable swap immediately
+      command: swapoff -a
+      changed_when: false
+
+    - name: Disable swap permanently in fstab
+      replace:
+        path: /etc/fstab
+        regexp: '^([^#].*\s+swap\s+.*)$'
+        replace: '# \1'
+
+    - name: Verify swap is off
+      command: free -h
+      register: swap_status
+      changed_when: false
+
+    - name: Show swap status
+      debug:
+        var: swap_status.stdout_lines
+
+    # ─── 2. 載入必要核心模組 ──────────────────────────────────────────────
+    - name: Load kernel modules for containerd / NKP
+      modprobe:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - overlay
+        - br_netfilter
+        - iscsi_tcp        # NKP / Nutanix CSI 需要
+
+    - name: Persist kernel modules
+      copy:
+        dest: /etc/modules-load.d/nkp.conf
+        content: |
+          overlay
+          br_netfilter
+          iscsi_tcp
+
+    # ─── 3. 核心網路參數 ──────────────────────────────────────────────────
+    - name: Configure sysctl for Kubernetes networking
+      sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        state: present
+        reload: yes
+      loop:
+        - { name: 'net.bridge.bridge-nf-call-iptables',  value: '1' }
+        - { name: 'net.bridge.bridge-nf-call-ip6tables', value: '1' }
+        - { name: 'net.ipv4.ip_forward',                 value: '1' }
+
+    # ─── 4. 啟用 iSCSI Daemon（NKP CSI 儲存需要）────────────────────────
+    - name: Install open-iscsi
+      apt:
+        name: open-iscsi
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    - name: Enable and start iscsid
+      systemd:
+        name: iscsid
+        enabled: yes
+        state: started
+
+    # ─── 5. 安裝必要套件 ──────────────────────────────────────────────────
+    - name: Install NKP prerequisite packages
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+          - zip
+          - unzip
+          - socat              # kube-apiserver 需要
+          - conntrack          # kube-proxy 需要
+          - ipset
+          - ipvsadm
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    # ─── 6. 設定 SSH 免密碼 sudo（NKP CAPI 需要）────────────────────────
+    - name: Configure passwordless sudo for NKP user
+      copy:
+        dest: /etc/sudoers.d/{{ nkp_user }}-nkp
+        content: "{{ nkp_user }} ALL=(ALL) NOPASSWD:ALL\n"
+        mode: '0440'
+        validate: 'visudo -cf %s'
+
+    # ─── 7. 確認 SSH 公鑰驗證設定 ────────────────────────────────────────
+    - name: Ensure SSH authorized_keys exists
+      file:
+        path: "/home/{{ nkp_user }}/.ssh"
+        state: directory
+        owner: "{{ nkp_user }}"
+        group: "{{ nkp_user }}"
+        mode: '0700'
+
+    - name: Ensure SSH pubkey authentication is enabled in sshd_config
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PubkeyAuthentication'
+        line: 'PubkeyAuthentication yes'
+      notify: Restart sshd
+
+    # ─── 8. 防火牆：開放 K8s 必要 Port ──────────────────────────────────
+    - name: Allow Kubernetes API server port (masters only)
+      ufw:
+        rule: allow
+        port: "6443"
+        proto: tcp
+      when:
+        - inventory_hostname in groups['masters']
+        - ansible_os_family == "Debian"
+      ignore_errors: yes   # 若 ufw 未安裝則跳過
+
+    - name: Allow NKP CAPI SSH access
+      ufw:
+        rule: allow
+        port: "22"
+        proto: tcp
+      ignore_errors: yes
+
+    # ─── 9. 時間同步（NKP 強制要求 NTP）──────────────────────────────────
+    - name: Install chrony for NTP
+      apt:
+        name: chrony
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Enable and start chrony
+      systemd:
+        name: chrony
+        enabled: yes
+        state: started
+
+    - name: Verify time sync
+      command: chronyc tracking
+      register: ntp_status
+      changed_when: false
+
+    - name: Show NTP status
+      debug:
+        var: ntp_status.stdout_lines
+
+    # ─── 10. 確認節點 hostname 正確 ──────────────────────────────────────
+    - name: Set hostname
+      hostname:
+        name: "{{ hostname }}"
+      when: hostname is defined
+
+    - name: Update /etc/hosts with cluster nodes
+      blockinfile:
+        path: /etc/hosts
+        block: |
+          10.10.7.50  cka-k8s-m1
+          10.10.7.51  cka-k8s-w1
+        marker: "# {mark} NKP CLUSTER NODES"
+
+    # ─── 11. 驗證結果 ────────────────────────────────────────────────────
+    - name: Gather readiness info
+      shell: |
+        echo "=== Swap Status ==="
+        free -h | grep Swap
+        echo "=== Kernel Modules ==="
+        lsmod | grep -E 'overlay|br_netfilter|iscsi_tcp'
+        echo "=== iSCSI Status ==="
+        systemctl is-active iscsid
+        echo "=== NTP Status ==="
+        systemctl is-active chrony
+        echo "=== Passwordless Sudo ==="
+        sudo -n true && echo "OK" || echo "FAIL"
+      register: readiness
+      changed_when: false
+
+    - name: Show readiness summary
+      debug:
+        var: readiness.stdout_lines
+
+  handlers:
+    - name: Restart sshd
+      systemd:
+        name: sshd
+        state: restarted

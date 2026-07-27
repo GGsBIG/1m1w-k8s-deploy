@@ -29,16 +29,19 @@
         state: directory
         mode: '0755'
 
+    - name: Remove old Kubernetes GPG key
+      file:
+        path: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+        state: absent
+
     - name: Add Kubernetes GPG key
       shell: |
-        curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.32/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+        curl -fsSL https://pkgs.k8s.io/core:/stable:/v{{ k8s_version.split('-')[0].split('.')[0] }}.{{ k8s_version.split('-')[0].split('.')[1] }}/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
         chmod 644 /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-      args:
-        creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
 
     - name: Add Kubernetes repository
       copy:
-        content: 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.32/deb/ /'
+        content: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v{{ k8s_version.split('-')[0].split('.')[0] }}.{{ k8s_version.split('-')[0].split('.')[1] }}/deb/ /"
         dest: /etc/apt/sources.list.d/kubernetes.list
         mode: '0644'
 

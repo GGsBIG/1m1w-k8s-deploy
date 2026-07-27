@@ -3,7 +3,7 @@
   hosts: all
   become: true
   vars:
-    ssh_key_path: "{{ ansible_ssh_private_key_file | default('~/.ssh/id_rsa') }}"
+    ssh_key_path: "{{ (ansible_ssh_private_key_file | default('~/.ssh/id_rsa')) | expanduser }}"
 
   pre_tasks:
     - name: Ensure sshpass is installed (Debian/Ubuntu)

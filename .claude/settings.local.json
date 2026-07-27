@@ -1,7 +1,13 @@
 {
   "permissions": {
     "allow": [
-      "Read(/Users/tianjiasong/1m1w-k8s-deploy/shell-foot-book/**)"
+      "Read(/Users/tianjiasong/1m1w-k8s-deploy/shell-foot-book/**)",
+      "WebSearch",
+      "WebFetch(domain:www.nutanix.dev)",
+      "WebFetch(domain:wskn.ai)",
+      "WebFetch(domain:polarclouds.co.uk)",
+      "Bash(chmod +x /Users/tianjiasong/1m1w-k8s-deploy/nutanix/scripts/install-nkp.sh && ls -la /Users/tianjiasong/1m1w-k8s-deploy/nutanix/)",
+      "Bash(git add *)"
     ],
     "deny": [],
     "ask": []

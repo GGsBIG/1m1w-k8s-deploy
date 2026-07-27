@@ -1,33 +1,34 @@
----
 - name: "Stage 1: System Setup"
   hosts: k8s_nodes
   become: yes
   gather_facts: yes
-  
+
   tasks:
     - name: Set timezone to Asia/Taipei
       timezone:
         name: Asia/Taipei
 
-    - name: Kill unattended-upgrades and wait for dpkg lock
-      shell: |
-        # Kill unattended-upgrades processes
-        sudo pkill -f unattended-upgrade || true
-        sudo pkill -f apt.systemd.daily || true
-        
-        # Wait for processes to finish and release locks
-        timeout=300
-        while [ $timeout -gt 0 ] && (sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || sudo fuser /var/lib/dpkg/lock >/dev/null 2>&1); do
-          echo "Waiting for dpkg lock to be released... ($timeout seconds remaining)"
-          sleep 5
-          timeout=$((timeout-5))
-        done
-        
-        # Force remove lock files if still present
-        sudo rm -f /var/lib/dpkg/lock-frontend
-        sudo rm -f /var/lib/dpkg/lock
-        sudo dpkg --configure -a || true
+    - name: Stop unattended-upgrades service
+      systemd:
+        name: unattended-upgrades
+        state: stopped
+        enabled: no
       ignore_errors: yes
+
+    - name: Kill any remaining processes holding dpkg lock
+      shell: |
+        kill -9 $(lsof -t /var/lib/dpkg/lock-frontend) 2>/dev/null || true
+        kill -9 $(lsof -t /var/lib/dpkg/lock) 2>/dev/null || true
+        rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock
+        dpkg --configure -a
+      ignore_errors: yes
+
+    - name: Wait for dpkg lock to be free
+      shell: while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 5; done
+      retries: 12
+      delay: 10
+      register: lock_result
+      until: lock_result.rc == 0
 
     - name: Remove any existing Kubernetes repository files
       file:
@@ -37,6 +38,11 @@
         - /etc/apt/sources.list.d/kubernetes.list
         - /etc/apt/keyrings/kubernetes-apt-keyring.gpg
       ignore_errors: yes
+
+    - name: Disable unattended-upgrades
+      apt:
+        name: unattended-upgrades
+        state: absent
 
     - name: Install chrony
       apt:
@@ -102,4 +108,3 @@
 
     - name: Apply sysctl settings
       command: sysctl --system
-

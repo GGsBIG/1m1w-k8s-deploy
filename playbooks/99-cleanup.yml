@@ -1,0 +1,127 @@
+---
+- name: Cleanup Kubernetes Cluster
+  hosts: all
+  become: true
+  ignore_errors: true
+
+  tasks:
+    - name: Reset kubeadm
+      shell: kubeadm reset -f
+      ignore_errors: true
+
+    - name: Unhold Kubernetes packages
+      shell: apt-mark unhold kubelet kubeadm kubectl
+      ignore_errors: true
+
+    - name: Remove Kubernetes packages
+      apt:
+        name:
+          - kubelet
+          - kubeadm
+          - kubectl
+          - kubernetes-cni
+        state: absent
+        purge: yes
+        autoremove: yes
+      ignore_errors: true
+
+    - name: Stop containerd
+      systemd:
+        name: containerd
+        state: stopped
+        enabled: false
+      ignore_errors: true
+
+    - name: Remove containerd binaries
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /usr/local/bin/containerd
+        - /usr/local/bin/containerd-shim
+        - /usr/local/bin/containerd-shim-runc-v1
+        - /usr/local/bin/containerd-shim-runc-v2
+        - /usr/local/bin/ctr
+        - /etc/systemd/system/containerd.service
+
+    - name: Remove containerd data directories
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/containerd
+        - /var/lib/containerd
+        - /run/containerd
+
+    - name: Remove runc
+      file:
+        path: /usr/local/sbin/runc
+        state: absent
+
+    - name: Remove CNI plugins
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /opt/cni
+        - /etc/cni
+
+    - name: Remove Kubernetes config directories
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/kubernetes
+        - /var/lib/kubernetes
+        - /var/lib/kubelet
+        - /var/lib/etcd
+
+    - name: Remove kubeconfig for root
+      file:
+        path: /root/.kube
+        state: absent
+
+    - name: Remove kubeconfig for ansible user
+      file:
+        path: "/home/{{ ansible_user }}/.kube"
+        state: absent
+
+    - name: Remove Kubernetes apt repository
+      file:
+        path: /etc/apt/sources.list.d/kubernetes.list
+        state: absent
+
+    - name: Remove Kubernetes GPG key
+      file:
+        path: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+        state: absent
+
+    - name: Flush iptables rules
+      shell: |
+        iptables -F
+        iptables -t nat -F
+        iptables -t mangle -F
+        iptables -X
+      ignore_errors: true
+
+    - name: Clear ipvs rules
+      shell: ipvsadm --clear
+      ignore_errors: true
+
+    - name: Remove virtual network interfaces
+      shell: "ip link delete {{ item }}"
+      loop:
+        - cni0
+        - flannel.1
+        - tunl0
+        - vxlan.calico
+      ignore_errors: true
+
+    - name: Reload systemd daemon
+      systemd:
+        daemon_reload: yes
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+      ignore_errors: true

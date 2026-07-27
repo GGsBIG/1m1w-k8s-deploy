@@ -19,10 +19,18 @@
         dest: /tmp/init-config.yaml
         mode: '0644'
 
+    - name: Check if already initialized
+      stat:
+        path: /etc/kubernetes/admin.conf
+      register: admin_conf
+
+    - name: Reset previous kubeadm state
+      shell: kubeadm reset -f --cri-socket unix:///run/containerd/containerd.sock
+      when: admin_conf.stat.exists
+      ignore_errors: true
+
     - name: Initialize Kubernetes cluster
       shell: kubeadm init --upload-certs --config=/tmp/init-config.yaml
-      args:
-        creates: /etc/kubernetes/admin.conf
       register: kubeadm_init_result
 
     - name: Create .kube directory for root

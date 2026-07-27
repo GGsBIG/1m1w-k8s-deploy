@@ -36,6 +36,69 @@ if ! command -v ansible-playbook &> /dev/null; then
     fi
 fi
 
+preflight() {
+    echo "==========================================="
+    echo "Preflight: Prerequisites Setup"
+    echo "==========================================="
+
+    # ansible.cfg
+    if [ ! -f ansible.cfg ]; then
+        printf '[defaults]\nhost_key_checking = False\n\n[ssh_connection]\npipelining = False\n' > ansible.cfg
+        echo "[OK] ansible.cfg created"
+    else
+        echo "[OK] ansible.cfg exists"
+    fi
+
+    # SSH key
+    if [ ! -f ~/.ssh/id_rsa ]; then
+        mkdir -p ~/.ssh && chmod 700 ~/.ssh
+        ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -q
+        echo "[OK] SSH key generated"
+    else
+        echo "[OK] SSH key exists"
+    fi
+
+    # Parse inventory
+    local inv="inventory.ini"
+    local user pass
+    user=$(grep '^ansible_user=' "$inv" | cut -d= -f2 | tr -d '[:space:]')
+    pass=$(grep '^ansible_password=' "$inv" | cut -d= -f2 | tr -d '[:space:]')
+
+    if [ -z "$user" ] || [ -z "$pass" ]; then
+        echo "[WARN] Cannot parse ansible_user/ansible_password from inventory.ini, skipping NOPASSWD setup"
+        return
+    fi
+
+    # sshpass
+    if ! command -v sshpass &> /dev/null; then
+        echo "Installing sshpass..."
+        sudo apt-get install -y sshpass -q 2>/dev/null || \
+        sudo yum install -y sshpass -q 2>/dev/null || \
+        { echo "[WARN] Cannot install sshpass, skipping NOPASSWD setup"; return; }
+    fi
+
+    # NOPASSWD sudo on each host
+    local ssh_opts="-o StrictHostKeyChecking=no -o ConnectTimeout=10"
+    while read -r line; do
+        local ip
+        ip=$(echo "$line" | grep -oP 'ansible_host=\K[^\s]+')
+        [ -z "$ip" ] && continue
+
+        echo -n "Setting up NOPASSWD sudo on $ip ... "
+        # Check if already passwordless
+        if sshpass -p "$pass" ssh $ssh_opts "$user@$ip" "sudo -n true" 2>/dev/null; then
+            echo "already OK"
+            continue
+        fi
+        sshpass -p "$pass" ssh $ssh_opts "$user@$ip" \
+            "echo '$pass' | sudo -S sh -c \"echo '$user ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/$user && chmod 440 /etc/sudoers.d/$user\"" 2>/dev/null \
+            && echo "OK" || echo "FAILED (will retry with Ansible)"
+    done < <(grep 'ansible_host=' "$inv" | grep -v '^\[' | grep -v '^#')
+
+    echo "Preflight complete."
+    echo ""
+}
+
 run_stage() {
     local stage_num=$1
     local stage_name=$2
@@ -56,7 +119,7 @@ run_stage() {
 
 deploy_full() {
     echo "Starting full cluster deployment..."
-    
+    preflight
     run_stage 0 "SSH Setup" "playbooks/00-ssh-setup.yml"
     run_stage 1 "System Setup" "playbooks/01-system-setup.yml"
     run_stage 2 "Container Runtime" "playbooks/02-container-runtime.yml"
