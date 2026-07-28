@@ -3,21 +3,47 @@
   hosts: masters[0]
   become: yes
   gather_facts: yes
-  
+
   tasks:
-    - name: Deploy Calico CNI
-      shell: |
-        curl -sL https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/calico.yaml | \
-        kubectl apply -f -
+    - name: Download Helm
+      get_url:
+        url: "https://get.helm.sh/helm-{{ helm_version }}-linux-amd64.tar.gz"
+        dest: "/tmp/helm-{{ helm_version }}-linux-amd64.tar.gz"
+        mode: '0644'
+
+    - name: Extract Helm binary
+      unarchive:
+        src: "/tmp/helm-{{ helm_version }}-linux-amd64.tar.gz"
+        dest: /tmp
+        remote_src: yes
+
+    - name: Install Helm binary
+      copy:
+        src: /tmp/linux-amd64/helm
+        dest: /usr/local/bin/helm
+        remote_src: yes
+        mode: '0755'
+
+    - name: Add Cilium Helm repo
+      shell: helm repo add cilium https://helm.cilium.io/ && helm repo update
+
+    - name: Install Cilium CNI
+      shell: >
+        helm install cilium cilium/cilium
+        --version {{ cilium_version }}
+        --namespace kube-system
+        --set kubeProxyReplacement=true
+        --set k8sServiceHost={{ ansible_default_ipv4.address }}
+        --set k8sServicePort=6443
       environment:
         KUBECONFIG: /etc/kubernetes/admin.conf
 
-    - name: Wait for Calico pods to be ready
-      shell: kubectl get pods -n kube-system -l k8s-app=calico-node --no-headers
+    - name: Wait for Cilium pods to be ready
+      shell: kubectl get pods -n kube-system -l k8s-app=cilium --no-headers
       environment:
         KUBECONFIG: /etc/kubernetes/admin.conf
-      register: calico_pods
-      until: calico_pods.stdout_lines | length > 0 and "Running" in calico_pods.stdout
+      register: cilium_pods
+      until: cilium_pods.stdout_lines | length > 0 and "Running" in cilium_pods.stdout
       retries: 30
       delay: 10
 
@@ -30,3 +56,11 @@
     - name: Display cluster pods status
       debug:
         var: all_pods.stdout_lines
+
+    - name: Clean up Helm archive
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "/tmp/helm-{{ helm_version }}-linux-amd64.tar.gz"
+        - "/tmp/linux-amd64"

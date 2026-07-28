@@ -110,7 +110,7 @@
 
     - name: Download runc binary
       get_url:
-        url: "https://github.com/opencontainers/runc/releases/download/v1.3.0/runc.amd64"
+        url: "https://github.com/opencontainers/runc/releases/download/{{ runc_version }}/runc.amd64"
         dest: "/tmp/runc.amd64"
         mode: '0755'
 
@@ -131,7 +131,7 @@
 
     - name: Download CNI plugins
       get_url:
-        url: "https://github.com/containernetworking/plugins/releases/download/v1.7.1/cni-plugins-linux-amd64-v1.7.1.tgz"
+        url: "https://github.com/containernetworking/plugins/releases/download/{{ cni_plugins_version }}/cni-plugins-linux-amd64-{{ cni_plugins_version }}.tgz"
         dest: "/tmp/cni-plugins.tgz"
         mode: '0644'
 
@@ -158,12 +158,6 @@
         path: /etc/containerd/config.toml
         regexp: 'SystemdCgroup = false'
         replace: 'SystemdCgroup = true'
-
-    - name: Update sandbox image to pause:3.10
-      replace:
-        path: /etc/containerd/config.toml
-        regexp: 'sandbox_image = "registry.k8s.io/pause:3.8"'
-        replace: 'sandbox_image = "registry.k8s.io/pause:3.10"'
 
     - name: Restart containerd
       systemd:

@@ -55,7 +55,7 @@
           - Control Plane: {{ control_plane_endpoint }}
           - Masters: {{ groups['masters'] | length }}
           - Workers: {{ groups['workers'] | length }}
-          - CNI: Calico {{ calico_version }}
+          - CNI: Cilium {{ cilium_version }}
           
           Next Steps:
           1. Copy kubeconfig: scp {{ ansible_user }}@{{ groups['masters'][0] }}:/etc/kubernetes/admin.conf ~/.kube/config
