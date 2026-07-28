@@ -86,11 +86,11 @@ preflight() {
 
         echo -n "Setting up NOPASSWD sudo on $ip ... "
         # Check if already passwordless
-        if sshpass -p "$pass" ssh $ssh_opts "$user@$ip" "sudo -n true" 2>/dev/null; then
+        if sshpass -p "$pass" ssh -n $ssh_opts "$user@$ip" "sudo -n true" 2>/dev/null; then
             echo "already OK"
             continue
         fi
-        sshpass -p "$pass" ssh $ssh_opts "$user@$ip" \
+        sshpass -p "$pass" ssh -n $ssh_opts "$user@$ip" \
             "echo '$pass' | sudo -S sh -c \"echo '$user ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/$user && chmod 440 /etc/sudoers.d/$user\"" 2>/dev/null \
             && echo "OK" || echo "FAILED (will retry with Ansible)"
     done < <(grep 'ansible_host=' "$inv" | grep -v '^\[' | grep -v '^#')
