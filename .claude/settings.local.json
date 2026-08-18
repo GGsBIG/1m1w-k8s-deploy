@@ -7,7 +7,8 @@
       "WebFetch(domain:wskn.ai)",
       "WebFetch(domain:polarclouds.co.uk)",
       "Bash(chmod +x /Users/tianjiasong/1m1w-k8s-deploy/nutanix/scripts/install-nkp.sh && ls -la /Users/tianjiasong/1m1w-k8s-deploy/nutanix/)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(ansible masters *)"
     ],
     "deny": [],
     "ask": []
